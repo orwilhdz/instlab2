@@ -1,0 +1,164 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+dir0 = Path(__file__).resolve().parent
+
+calfile = dir0 / "Calibration2.csv"
+hotfile = dir0 / "2.2labviewdata.txt"
+
+#Steinhart–Hart coefficients from lab manual
+SH_A = 1.486e-3
+SH_B = 2.186e-4
+SH_C = 2.315e-7
+
+def fitlin(x,y):
+    x = np.asarray(x,float)
+    y = np.asarray(y,float)
+
+    a,b = np.polyfit(x,y,1)
+
+    yh = a*x + b
+    ssr = np.sum((y-yh)**2)
+    sst = np.sum((y-np.mean(y))**2)
+    r2 = 1-ssr/sst
+
+    return a,b,r2
+def thermocouple_to_uV(x):
+    x = np.asarray(x,float)
+
+    if np.nanmedian(x) < 0.05:
+        x = x*1e6
+
+    return x
+
+#Steinhart–Hart function
+def steinhart_hart_temp_C(Rohm, A=SH_A, B=SH_B, C=SH_C):
+    Rohm = np.asarray(Rohm, float)
+    out = np.full(Rohm.shape, np.nan, float)
+    m = np.isfinite(Rohm) & (Rohm > 0)
+    if np.sum(m) == 0:
+        return out
+    lnr = np.log(Rohm[m])
+    invT = A + B * lnr + C * (lnr ** 3)
+    Tk = 1.0 / invT
+    out[m] = Tk - 273.15
+    return out
+
+
+def main():
+    #2.2.1 Calibration data
+    df = pd.read_csv(calfile)
+    tref = df["tref"].to_numpy()
+    prt  = df["prtr"].to_numpy()
+    tc   = df["tcraw"].to_numpy()
+    th   = df["thohm"].to_numpy()
+    tc = thermocouple_to_uV(tc)
+    mtc,btc,r2tc = fitlin(tc,tref)
+
+    plt.figure()
+    plt.scatter(tc,tref,s=10)
+    x = np.linspace(np.min(tc),np.max(tc),300)
+    plt.plot(x,mtc*x+btc,color="red")
+    plt.xlabel("Thermocouple Output (µV)")
+    plt.ylabel("Reference Temperature (°C)")
+    plt.title(f"Thermocouple Calibration (R² = {r2tc:.4f})")
+    plt.grid(alpha=0.3)
+    plt.savefig(dir0/"plotcalTC.png",dpi=300)
+    plt.close()
+
+    #PRT fit
+    mpr,bpr,r2pr = fitlin(prt,tref)
+    plt.figure()
+    plt.scatter(prt,tref,s=10)
+    x = np.linspace(np.min(prt),np.max(prt),300)
+    plt.plot(x,mpr*x+bpr,color="red")
+    plt.xlabel("PRT Resistance (Ohms)")
+    plt.ylabel("Reference Temperature (°C)")
+    plt.title(f"PRT Calibration (R² = {r2pr:.4f})")
+    plt.grid(alpha=0.3)
+    plt.savefig(dir0/"plotcalPRT.png",dpi=300)
+    plt.close()
+
+    #Comparison plot
+    Ttc = mtc*tc + btc
+    Tpr = mpr*prt + bpr
+    Tth = steinhart_hart_temp_C(th)
+
+    tb = np.round(tref/5)*5
+
+    bins = np.unique(tb)
+
+    ypr=[]
+    ytc=[]
+    yth=[]
+    epr=[]
+    etc=[]
+    eth=[]
+
+    for b in bins:
+
+        a1 = Tpr[tb==b]
+        a2 = Ttc[tb==b]
+        a3 = Tth[tb==b]
+
+        ypr.append(np.mean(a1))
+        ytc.append(np.mean(a2))
+        yth.append(np.mean(a3))
+
+        epr.append(np.std(a1))
+        etc.append(np.std(a2))
+        eth.append(np.std(a3))
+
+    plt.figure()
+
+    plt.plot([bins.min(),bins.max()],
+             [bins.min(),bins.max()],
+             "--",label="Ideal")
+
+    plt.errorbar(bins,ypr,yerr=epr,fmt="o-",label="PRT")
+    plt.errorbar(bins,ytc,yerr=etc,fmt="o-",label="Thermocouple")
+    plt.errorbar(bins,yth,yerr=eth,fmt="o-",label="Thermistor")
+
+    plt.xlabel("Calibration temperature (°C)")
+    plt.ylabel("Sensor temperature (°C)")
+    plt.title("Sensor temperatures vs calibration temperature")
+    plt.grid(alpha=0.3)
+    plt.legend()
+
+    plt.savefig(dir0/"plotcalComp.png",dpi=300)
+    plt.close()
+
+    #Linear regression
+    eqtc = f"T(C) = {mtc:.8g}x + {btc:.8g}"
+    eqpr = f"T(C) = {mpr:.8g}x + {bpr:.8g}"
+
+    dfout = pd.DataFrame([
+        {"sensor":"thermocouple","eq":eqtc},
+        {"sensor":"prt","eq":eqpr},
+        {"sensor":"thermistor","eq":"Steinhart-Hart"}
+    ])
+
+    dfout.to_csv(dir0/"calEq.csv",index=False)
+
+    #2.2.2 Hot plate
+    df = pd.read_csv(hotfile,sep=None,engine="python")
+
+    t = df.iloc[:,0].to_numpy()
+
+    plt.figure()
+
+    for c in df.columns[1:]:
+        y = pd.to_numeric(df[c],errors="coerce").to_numpy()
+        plt.plot(t,y,label=c)
+
+    plt.title("Hot Plate Temperature vs Time")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Temperature (°C)")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.savefig(dir0/"plot222.png",dpi=300)
+    plt.close()
+if __name__ == "__main__":
+    main()
